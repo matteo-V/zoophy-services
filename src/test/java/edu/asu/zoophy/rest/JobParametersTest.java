@@ -41,6 +41,8 @@ public class JobParametersTest {
 		paramters.setPredictors(mockPredictors);
 		paramters.setReplyEmail("zoophy@asu.edu");
 		paramters.setUseGLM(true);
+		// add new test for useJumps @matteo-V
+		paramters.setUseJumps(true);
 		paramters.setXmlOptions(mockXMLParams);
 		assertThat(paramters).isNotNull();
 		assertThat(paramters.getAccessions()).isNotNull();
@@ -53,6 +55,9 @@ public class JobParametersTest {
 		assertThat(paramters.getReplyEmail()).isEqualTo("zoophy@asu.edu");
 		assertThat(paramters.isUsingGLM()).isNotNull();
 		assertThat(paramters.isUsingGLM()).isEqualTo(true);
+		//add assertions for using Jumps @matteo-V
+		assertThat(paramters.isUsingJumps()).isNotNull();
+		assertThat(paramters.isUsingJumps()).isEqualTo(true);
 		assertThat(paramters.getXmlOptions()).isNotNull();
 		assertThat(paramters.getXmlOptions()).isEqualTo(mockXMLParams);
 	}
