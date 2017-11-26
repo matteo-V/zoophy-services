@@ -19,17 +19,23 @@ import edu.asu.zoophy.rest.pipeline.glm.Predictor;
  * Responsible for running ZooPhy jobs
  * @author devdemetri
  */
+
+/**
+ * added markov jump support
+ * @author matteo-V
+ */
 public class ZooPhyRunner {
 
 	private final ZooPhyJob job;
 	private final ZooPhyMailer mailer;
 	private final Logger log;
-
-	public ZooPhyRunner(String replyEmail, String jobName, boolean useGLM, Map<String, List<Predictor>> predictors, XMLParameters xmlOptions) throws PipelineException {
+	//add new param to method signature
+	public ZooPhyRunner(String replyEmail, String jobName, boolean useGLM, boolean useJumps, Map<String, List<Predictor>> predictors, XMLParameters xmlOptions) throws PipelineException {
 		final String id  = UUID.randomUUID().toString();
 		log = Logger.getLogger("ZooPhyRunner"+id);
 		log.info("Initializing ZooPhy Job");
-		job = new ZooPhyJob(id,jobName,replyEmail, useGLM, predictors, xmlOptions);
+		//add new param to constructor call
+		job = new ZooPhyJob(id,jobName,replyEmail, useGLM, useJumps, predictors, xmlOptions);
 		log.info("Initializing ZooPhyMailer... : "+job.getID());
 		mailer = new ZooPhyMailer(job);
 	}

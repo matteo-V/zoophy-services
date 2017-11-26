@@ -31,213 +31,273 @@ import edu.asu.zoophy.rest.pipeline.glm.GLMException;
  * Responsible for running BEAST processes
  * @author devdemetri
  */
+
+/**
+ * added support for markov jumps
+ * @author matteo-V
+ */
 public class BeastRunner {
-	
-	private final String JOB_LOG_DIR;
-	private final String BEAST_SCRIPTS_DIR;
-	private final String SPREAD3;
-	private final String WORLD_GEOJSON;
-	private final String RENDER_DIR;
-	private final String FIGTREE_TEMPLATE;
-	private final String GLM_SCRIPT;
-	private final String JOB_WORK_DIR;
-	
-	private final static String ALIGNED_FASTA = "-aligned.fasta";
-	private final static String INPUT_XML = ".xml";
-	private final static String OUTPUT_TREES = "trees";
-	private final static String RESULT_TREE = ".tree";
-	private final static String GLM_SUFFIX = "_GLMedits";
-	
-	private final Logger log;
-	private final ZooPhyMailer mailer;
-	private final ZooPhyJob job;
-	private Set<String> filesToCleanup;
-	private File logFile;
-	private Tailer tail = null;
-	private Tailer rateTail = null;
-	private Process beastProcess;
-	private boolean wasKilled = false;
-	private boolean isTest = false;
-	
-	public BeastRunner(ZooPhyJob job, ZooPhyMailer mailer) throws PipelineException {
-		PropertyProvider provider = PropertyProvider.getInstance();
-		JOB_LOG_DIR = provider.getProperty("job.logs.dir");
-		BEAST_SCRIPTS_DIR = provider.getProperty("beast.scripts.dir");
-		WORLD_GEOJSON = provider.getProperty("geojson.location");
-		RENDER_DIR = provider.getProperty("spread3.result.dir");
-		FIGTREE_TEMPLATE = System.getProperty("user.dir")+"/Templates/figtreeBlock.template";
-		SPREAD3 = provider.getProperty("spread3.jar");
-		GLM_SCRIPT = provider.getProperty("glm.script");
-		log = Logger.getLogger("BeastRunner"+job.getID());
-		this.mailer = mailer;
-		this.job = job;
-		filesToCleanup = new LinkedHashSet<String>();
-		JOB_WORK_DIR = System.getProperty("user.dir")+"/ZooPhyJobs/";
-	}
-	
-	/**
-	 * Runs the BEAST process
-	 * @return resulting Tree File
-	 * @throws PipelineException 
-	 */
-	public File run() throws PipelineException {
-		String resultingTree = null;
-		FileHandler fileHandler = null;
-		try {
-			logFile = new File(JOB_LOG_DIR+job.getID()+".log");
-			fileHandler = new FileHandler(JOB_LOG_DIR+job.getID()+".log", true);
-			SimpleFormatter formatter = new SimpleFormatter();
-	        fileHandler.setFormatter(formatter);
-	        log.addHandler(fileHandler);
-	        log.setUseParentHandlers(false);
-			log.info("Starting the BEAST process...");
-			runBeastGen(job.getID()+ALIGNED_FASTA, job.getID()+INPUT_XML, job.getXMLOptions());
-			log.info("Adding location trait...");
-			DiscreteTraitInserter traitInserter = new DiscreteTraitInserter(job);
-			traitInserter.addLocation();
-			log.info("Location trait added.");
-			if (job.isUsingGLM()) {
-				log.info("Adding GLM Predictors...");
-				runGLM();
-				log.info("GLM Predictors added.");
-			}
-			else {
-				log.info("Job is not using GLM.");
-			}
-			runBeast(job.getID());
-			if (wasKilled || !PipelineManager.checkProcess(job.getID())) {
-				throw new BeastException("Job was stopped!", "Job was stopped!");
-			}
-			if (job.isUsingGLM()) {
-				resultingTree = runTreeAnnotator(job.getID()+"-aligned"+GLM_SUFFIX+"_states."+OUTPUT_TREES);
-			}
-			else {
-				resultingTree = runTreeAnnotator(job.getID()+"-aligned."+OUTPUT_TREES);
-			}
-			File tree = new File(resultingTree);
-			if (tree.exists()) {
-				annotateTreeFile(resultingTree);
-				runSpread();
-				log.info("BEAST process complete.");
-			}
-			else {
-				log.log(Level.SEVERE, "TreeAnnotator did not proudce .tree file!");
-				throw new BeastException("TreeAnnotator did not proudce .tree file!", "Tree Annotator Failed");
-			}
-			return tree;
-		}
-		catch (PipelineException pe) {
-			log.log(Level.SEVERE, "BEAST process failed: "+pe.getMessage());
-			throw pe;
-		}
-		catch (Exception e) {
-			log.log(Level.SEVERE, "BEAST process failed: "+e.getMessage());
-			throw new BeastException("BEAST process failed: "+e.getMessage(), "BEAST Pipeline Failed");
-		}
-		finally {
-			if (tail != null) {
-				tail.stop();
-			}
-			if (rateTail != null) {
-				rateTail.stop();
-			}
-			cleanupBeast();
-			if (fileHandler != null) {
-				fileHandler.close();
-			}
-		}
-	}
-	
-	/**
-	 * Generates an input.xml file to feed into BEAST
-	 * @param fastaFile
-	 * @param beastInput
-	 * @param xmlParameters 
-	 * @param beastSubstitutionModel 
-	 * @throws BeastException
-	 * @throws IOException
-	 * @throws InterruptedException
-	 */
-	private void runBeastGen(String fastaFile, String beastInput, XMLParameters xmlParameters) throws BeastException, IOException, InterruptedException {
-		String workingDir =  "../ZooPhyJobs/";
-		File beastGenDir = new File(System.getProperty("user.dir")+"/BeastGen");
-		filesToCleanup.add(JOB_WORK_DIR+fastaFile);
-		//String template = substitutionModel.toString() + ".template"; //TODO add/change templates
-		String template = "beastgen.template";
-		log.info("Running BEASTGen...");
-		ProcessBuilder builder = new ProcessBuilder("java", "-jar", "beastgen.jar", "-date_order", "4", "-D", "chain_length="+xmlParameters.getChainLength().toString()+",log_every="+xmlParameters.getSubSampleRate().toString()+"" ,template, workingDir+fastaFile, workingDir+beastInput).directory(beastGenDir);
-		builder.redirectOutput(Redirect.appendTo(logFile));
-		builder.redirectError(Redirect.appendTo(logFile));
-		log.info("Starting Process: "+builder.command().toString());
-		Process beastGenProcess = builder.start();
-		if (!isTest) {
-			PipelineManager.setProcess(job.getID(), beastGenProcess);
-		}
-		beastGenProcess.waitFor();
-		if (beastGenProcess.exitValue() != 0) {
-			log.log(Level.SEVERE, "BeastGen failed! with code: "+beastGenProcess.exitValue());
-			throw new BeastException("BeastGen failed! with code: "+beastGenProcess.exitValue(), "BeastGen Failed");
-		}
-		filesToCleanup.add(JOB_WORK_DIR+beastInput);
-		log.info("BEAST input created.");
-	}
-	
-	/**
-	 * Adds GLM predictors to the BEAST XML input file
-	 * @throws IOException 
-	 * @throws InterruptedException
-	 * @throws GLMException
-	 */
-	private void runGLM() throws IOException, InterruptedException, GLMException {
-		log.info("Running BEAST_GLM...");
-		final String GLM_PATH = JOB_WORK_DIR+job.getID()+"-"+"predictors.txt";
-		final File PREDICTORS_FILE = new File(GLM_PATH);
-		if (PREDICTORS_FILE.exists()) {
-			final String BEAST_INPUT = JOB_WORK_DIR+job.getID()+INPUT_XML;
-			ProcessBuilder builder = new ProcessBuilder("python3", GLM_SCRIPT, BEAST_INPUT, "states", "batch", PREDICTORS_FILE.getAbsolutePath()).directory(new File(JOB_WORK_DIR));
-			builder.redirectOutput(Redirect.appendTo(logFile));
-			builder.redirectError(Redirect.appendTo(logFile));
-			log.info("Starting Process: "+builder.command().toString());
-			Process beastGLMProcess = builder.start();
-			if (!isTest) {
-				PipelineManager.setProcess(job.getID(), beastGLMProcess);
-			}
-			OutputStream glmStream = beastGLMProcess.getOutputStream();
-	        BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(glmStream));
-	        // Yes to creating Distance predictor from Latitude and Longitude
-	        writer.write("y");
-	        writer.write("\n");
-	        writer.flush();
-	        // No to raw Latitude predictor
-	        writer.write("n");
-	        writer.write("\n");
-	        writer.flush();
-	        // No to raw Longitude predictor
-	        writer.write("n");
-	        writer.write("\n");
-	        writer.flush();
-	        // Yes to confirm list of predictors
-	        writer.write("y");
-	        writer.write("\n");
-	        writer.flush();
-	        writer.close();
-		    glmStream.close();
-		    beastGLMProcess.waitFor();
-			if (beastGLMProcess.exitValue() != 0) {
-				log.log(Level.SEVERE, "BEAST GLM failed! with code: "+beastGLMProcess.exitValue());
-				throw new GLMException("BEAST GLM failed! with code: "+beastGLMProcess.exitValue(), "BEAST_GLM failed!");
-			}
-			filesToCleanup.add(GLM_PATH);
-			filesToCleanup.add(JOB_WORK_DIR+job.getID()+GLM_SUFFIX+INPUT_XML);
-			filesToCleanup.add(JOB_WORK_DIR+job.getID()+"_distanceMatrix.txt");
-			log.info("BEAST_GLM finished.");
-		}
-		else {
-			log.log(Level.SEVERE, "Predictors file does not exist: "+GLM_PATH);
-			throw new GLMException("No Predictors file found: "+PREDICTORS_FILE.getAbsolutePath(), "No GLM Predictors file found!");
-		}
-	}
-	
+
+    private final String JOB_LOG_DIR;
+    private final String BEAST_SCRIPTS_DIR;
+    private final String SPREAD3;
+    private final String WORLD_GEOJSON;
+    private final String RENDER_DIR;
+    private final String FIGTREE_TEMPLATE;
+    private final String GLM_SCRIPT;
+    // add new var for jump script  @matteo-V
+    private final String JUMP_SCRIPT;
+    private final String JOB_WORK_DIR;
+
+    private final static String ALIGNED_FASTA = "-aligned.fasta";
+    private final static String INPUT_XML = ".xml";
+    private final static String OUTPUT_TREES = "trees";
+    private final static String RESULT_TREE = ".tree";
+    private final static String GLM_SUFFIX = "_GLMedits";
+    // add new file suffix @matteo-V
+    private final static String JUMP_SUFFIX = "_jumps";
+
+    private final Logger log;
+    private final ZooPhyMailer mailer;
+    private final ZooPhyJob job;
+    private Set<String> filesToCleanup;
+    private File logFile;
+    private Tailer tail = null;
+    private Tailer rateTail = null;
+    private Process beastProcess;
+    private boolean wasKilled = false;
+    private boolean isTest = false;
+
+    public BeastRunner(ZooPhyJob job, ZooPhyMailer mailer) throws PipelineException {
+        PropertyProvider provider = PropertyProvider.getInstance();
+        JOB_LOG_DIR = provider.getProperty("job.logs.dir");
+        BEAST_SCRIPTS_DIR = provider.getProperty("beast.scripts.dir");
+        WORLD_GEOJSON = provider.getProperty("geojson.location");
+        RENDER_DIR = provider.getProperty("spread3.result.dir");
+        FIGTREE_TEMPLATE = System.getProperty("user.dir") + "/Templates/figtreeBlock.template";
+        SPREAD3 = provider.getProperty("spread3.jar");
+        GLM_SCRIPT = provider.getProperty("glm.script");
+        // jump script from application.settings file name  @matteo-V
+        JUMP_SCRIPT = provider.getProperty("jump.script");
+        log = Logger.getLogger("BeastRunner" + job.getID());
+        this.mailer = mailer;
+        this.job = job;
+        filesToCleanup = new LinkedHashSet<String>();
+        JOB_WORK_DIR = System.getProperty("user.dir") + "/ZooPhyJobs/";
+    }
+
+    /**
+     * Runs the BEAST process
+     *
+     * @return resulting Tree File
+     * @throws PipelineException
+     */
+    public File run() throws PipelineException {
+        String resultingTree = null;
+        FileHandler fileHandler = null;
+        try {
+            logFile = new File(JOB_LOG_DIR + job.getID() + ".log");
+            fileHandler = new FileHandler(JOB_LOG_DIR + job.getID() + ".log", true);
+            SimpleFormatter formatter = new SimpleFormatter();
+            fileHandler.setFormatter(formatter);
+            log.addHandler(fileHandler);
+            log.setUseParentHandlers(false);
+            log.info("Starting the BEAST process...");
+            runBeastGen(job.getID() + ALIGNED_FASTA, job.getID() + INPUT_XML, job.getXMLOptions());
+            log.info("Adding location trait...");
+            DiscreteTraitInserter traitInserter = new DiscreteTraitInserter(job);
+            traitInserter.addLocation();
+            log.info("Location trait added.");
+            if (job.isUsingGLM()) {
+                log.info("Adding GLM Predictors...");
+                runGLM();
+                log.info("GLM Predictors added.");
+            } else {
+                log.info("Job is not using GLM.");
+            }
+            // add new branch for jobs using markov jumps @matteo-V
+            if (job.isUsingJumps()) {
+                log.info("Adding Markov Jumps...");
+                // call new private method to provide BEAST JUMP script service
+                runJumps();
+                log.info("Markov Jumps added.");
+            } else {
+                log.info("Job is not using Markov Jumps");
+            }
+            runBeast(job.getID());
+            if (wasKilled || !PipelineManager.checkProcess(job.getID())) {
+                throw new BeastException("Job was stopped!", "Job was stopped!");
+            }
+            if (job.isUsingGLM()) {
+                resultingTree = runTreeAnnotator(job.getID() + "-aligned" + GLM_SUFFIX + "_states." + OUTPUT_TREES);
+            } else {
+                resultingTree = runTreeAnnotator(job.getID() + "-aligned." + OUTPUT_TREES);
+            }
+            File tree = new File(resultingTree);
+            if (tree.exists()) {
+                annotateTreeFile(resultingTree);
+                runSpread();
+                log.info("BEAST process complete.");
+            } else {
+                log.log(Level.SEVERE, "TreeAnnotator did not proudce .tree file!");
+                throw new BeastException("TreeAnnotator did not proudce .tree file!", "Tree Annotator Failed");
+            }
+            return tree;
+        } catch (PipelineException pe) {
+            log.log(Level.SEVERE, "BEAST process failed: " + pe.getMessage());
+            throw pe;
+        } catch (Exception e) {
+            log.log(Level.SEVERE, "BEAST process failed: " + e.getMessage());
+            throw new BeastException("BEAST process failed: " + e.getMessage(), "BEAST Pipeline Failed");
+        } finally {
+            if (tail != null) {
+                tail.stop();
+            }
+            if (rateTail != null) {
+                rateTail.stop();
+            }
+            cleanupBeast();
+            if (fileHandler != null) {
+                fileHandler.close();
+            }
+        }
+    }
+
+    /**
+     * Generates an input.xml file to feed into BEAST
+     *
+     * @param fastaFile
+     * @param beastInput
+     * @param xmlParameters
+     * @throws BeastException
+     * @throws IOException
+     * @throws InterruptedException
+     */
+    private void runBeastGen(String fastaFile, String beastInput, XMLParameters xmlParameters) throws BeastException, IOException, InterruptedException {
+        String workingDir = "../ZooPhyJobs/";
+        File beastGenDir = new File(System.getProperty("user.dir") + "/BeastGen");
+        filesToCleanup.add(JOB_WORK_DIR + fastaFile);
+        //String template = substitutionModel.toString() + ".template"; //TODO add/change templates
+        String template = "beastgen.template";
+        log.info("Running BEASTGen...");
+        ProcessBuilder builder = new ProcessBuilder("java", "-jar", "beastgen.jar", "-date_order", "4", "-D", "chain_length=" + xmlParameters.getChainLength().toString() + ",log_every=" + xmlParameters.getSubSampleRate().toString() + "", template, workingDir + fastaFile, workingDir + beastInput).directory(beastGenDir);
+        builder.redirectOutput(Redirect.appendTo(logFile));
+        builder.redirectError(Redirect.appendTo(logFile));
+        log.info("Starting Process: " + builder.command().toString());
+        Process beastGenProcess = builder.start();
+        if (!isTest) {
+            PipelineManager.setProcess(job.getID(), beastGenProcess);
+        }
+        beastGenProcess.waitFor();
+        if (beastGenProcess.exitValue() != 0) {
+            log.log(Level.SEVERE, "BeastGen failed! with code: " + beastGenProcess.exitValue());
+            throw new BeastException("BeastGen failed! with code: " + beastGenProcess.exitValue(), "BeastGen Failed");
+        }
+        filesToCleanup.add(JOB_WORK_DIR + beastInput);
+        log.info("BEAST input created.");
+    }
+
+    /**
+     * Adds GLM predictors to the BEAST XML input file
+     *
+     * @throws IOException
+     * @throws InterruptedException
+     * @throws GLMException
+     */
+    private void runGLM() throws IOException, InterruptedException, GLMException {
+        log.info("Running BEAST_GLM...");
+        final String GLM_PATH = JOB_WORK_DIR + job.getID() + "-" + "predictors.txt";
+        final File PREDICTORS_FILE = new File(GLM_PATH);
+        if (PREDICTORS_FILE.exists()) {
+            final String BEAST_INPUT = JOB_WORK_DIR + job.getID() + INPUT_XML;
+            ProcessBuilder builder = new ProcessBuilder("python3", GLM_SCRIPT, BEAST_INPUT, "states", "batch", PREDICTORS_FILE.getAbsolutePath()).directory(new File(JOB_WORK_DIR));
+            builder.redirectOutput(Redirect.appendTo(logFile));
+            builder.redirectError(Redirect.appendTo(logFile));
+            log.info("Starting Process: " + builder.command().toString());
+            Process beastGLMProcess = builder.start();
+            if (!isTest) {
+                PipelineManager.setProcess(job.getID(), beastGLMProcess);
+            }
+            OutputStream glmStream = beastGLMProcess.getOutputStream();
+            BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(glmStream));
+            // Yes to creating Distance predictor from Latitude and Longitude
+            writer.write("y");
+            writer.write("\n");
+            writer.flush();
+            // No to raw Latitude predictor
+            writer.write("n");
+            writer.write("\n");
+            writer.flush();
+            // No to raw Longitude predictor
+            writer.write("n");
+            writer.write("\n");
+            writer.flush();
+            // Yes to confirm list of predictors
+            writer.write("y");
+            writer.write("\n");
+            writer.flush();
+            writer.close();
+            glmStream.close();
+            beastGLMProcess.waitFor();
+            if (beastGLMProcess.exitValue() != 0) {
+                log.log(Level.SEVERE, "BEAST GLM failed! with code: " + beastGLMProcess.exitValue());
+                throw new GLMException("BEAST GLM failed! with code: " + beastGLMProcess.exitValue(), "BEAST_GLM failed!");
+            }
+            filesToCleanup.add(GLM_PATH);
+            filesToCleanup.add(JOB_WORK_DIR + job.getID() + GLM_SUFFIX + INPUT_XML);
+            filesToCleanup.add(JOB_WORK_DIR + job.getID() + "_distanceMatrix.txt");
+            log.info("BEAST_GLM finished.");
+        } else {
+            log.log(Level.SEVERE, "Predictors file does not exist: " + GLM_PATH);
+            throw new GLMException("No Predictors file found: " + PREDICTORS_FILE.getAbsolutePath(), "No GLM Predictors file found!");
+        }
+    }
+
+    /**
+     * Adds asymmetric markov jumps to BEAST XML input file
+     * @author matteo-V
+     * @throws IOException
+     * @throws InterruptedException
+     * @throws PipelineException
+     *
+     */
+    private void runJumps() throws IOException, InterruptedException, PipelineException {
+        log.info("Running BEAST JUMPS");
+        final String GLM_XML_PATH = JOB_WORK_DIR + job.getID() + GLM_SUFFIX + INPUT_XML;
+        final File GLM_FILE = new File(GLM_XML_PATH);
+        final String BEAST_INPUT;
+        final String FILE_TO_CLEAN;
+
+        if (GLM_FILE.exists()) {
+            BEAST_INPUT = JOB_WORK_DIR + job.getID() + GLM_SUFFIX;
+            FILE_TO_CLEAN = BEAST_INPUT;
+        }
+        else {
+               BEAST_INPUT = JOB_WORK_DIR+job.getID();
+               FILE_TO_CLEAN  = BEAST_INPUT;
+        }
+
+        ProcessBuilder builder = new ProcessBuilder("python3", JUMP_SCRIPT, BEAST_INPUT);
+        builder.redirectOutput(Redirect.appendTo(logFile));
+        builder.redirectError(Redirect.appendTo(logFile));
+        log.info("Starting markov jump addition...");
+
+        // call the external script here @matteo-V
+            Process beastJumpProcess = builder.start();
+            if (!isTest){
+                PipelineManager.setProcess(job.getID(), beastJumpProcess);
+            }
+            beastJumpProcess.waitFor();
+            if(beastJumpProcess.exitValue() != 0 ){
+                log.log(Level.SEVERE, " BEAST JUMPS failed!") ;
+                throw new PipelineException("BEAST JUMPS failed!", "BEAST JUMPS failed! markov analysis not added.");
+            }
+
+            //cleanup input XML files and jump XML created by process
+            filesToCleanup.add(FILE_TO_CLEAN+INPUT_XML);
+            filesToCleanup.add(FILE_TO_CLEAN+JUMP_SUFFIX+INPUT_XML);
+    }
+
 	/**
 	 * Runs BEAST on the input.xml file
 	 * @param jobID
@@ -245,6 +305,10 @@ public class BeastRunner {
 	 * @throws IOException
 	 * @throws InterruptedException
 	 */
+    /**
+     * modified for markov jump pipeline
+     * @author matteo-V
+     */
 	private void runBeast(String jobID) throws BeastException, IOException, InterruptedException {
 		String input;
 		if (job.isUsingGLM()) { 
