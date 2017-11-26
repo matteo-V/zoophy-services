@@ -42,6 +42,11 @@ import edu.asu.zoophy.rest.security.SecurityHelper;
  * Responsible for mapping ZooPhy service requests
  * @author devdemetri
  */
+
+/**
+ * Added support for markov jumps
+ * @author matteo-V
+ */
 @RestController
 public class ZooPhyController {
 	
@@ -239,7 +244,8 @@ public class ZooPhyController {
     			log.warning("Bad XML Parameters: "+pe.getMessage());
     			throw pe;
     		}
-	    	zoophy = new ZooPhyRunner(parameters.getReplyEmail(), parameters.getJobName(), parameters.isUsingGLM(), parameters.getPredictors(), parameters.getXmlOptions());
+    		// add call to job parameters method isUsingGLM() @matteo-V
+	    	zoophy = new ZooPhyRunner(parameters.getReplyEmail(), parameters.getJobName(), parameters.isUsingGLM(), parameters.isUsingJumps(),  parameters.getPredictors(), parameters.getXmlOptions());
 	    	Set<String> jobAccessions = new LinkedHashSet<String>(parameters.getAccessions().size());
 	    	for(String accession : parameters.getAccessions()) {
 	    		if  (security.checkParameter(accession, Parameter.ACCESSION)) {
@@ -419,7 +425,8 @@ public class ZooPhyController {
 	    			log.warning("Bad XML Parameters: "+pe.getMessage());
 	    			throw pe;
 	    		}
-		    	zoophy = new ZooPhyRunner(parameters.getReplyEmail(), parameters.getJobName(), parameters.isUsingGLM(), parameters.getPredictors(), parameters.getXmlOptions());
+	    		// change call to constructor method @matteo-V
+		    	zoophy = new ZooPhyRunner(parameters.getReplyEmail(), parameters.getJobName(), parameters.isUsingGLM(), parameters.isUsingJumps(), parameters.getPredictors(), parameters.getXmlOptions());
 		    	Set<String> jobAccessions = new LinkedHashSet<String>(parameters.getAccessions().size());
 		    	for(String accession : parameters.getAccessions()) {
 		    		if  (security.checkParameter(accession, Parameter.ACCESSION)) {
