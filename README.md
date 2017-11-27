@@ -9,7 +9,7 @@ Fork of [RESTful Services](https://github.com/ZooPhy/zoophy-services) for [ZooPh
 
 ## Dependencies:
 * See [ZooPhy Services](https://github.com/ZooPhy/zoophy-services)
-* [BEAST JUMPS](link to repo here)
+* [BEAST JUMPS](../lib/create_jump_xml.py)
 
 ## Setup:
 [See ZooPhy Services setup](https://github.com/ZooPhy/zoophy-services)
