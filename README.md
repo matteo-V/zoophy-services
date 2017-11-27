@@ -1,5 +1,5 @@
 # zoophy-services-jumps
-RESTful services for [ZooPhy](https://zodo.asu.edu/zoophy/). Fork of [ZooPhy Services](https://github.com/ZooPhy/zoophy-services) updated to include support for asymmetric markov jump analysis. This consists of:
+Fork of [RESTful Services](https://github.com/ZooPhy/zoophy-services) for [ZooPhy](https://zodo.asu.edu/zoophy/) updated to include support for asymmetric markov jump analysis. This consists of:
 
 1) Retrieving GenBankRecords from the ZooPhy SQL Database
 
